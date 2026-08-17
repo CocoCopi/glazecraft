@@ -1,0 +1,8 @@
+#!/bin/bash
+# glazecraft — a React-style component framework for Corros.
+#   glazecraft render | glazecraft serve [port]
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+DIR="$(cd "$(dirname "$SELF")" && pwd)"
+export CORROS_ROOT="$DIR"
+cd "${TMPDIR:-/tmp}"
+exec corros "$DIR/src/cli.cro" "$@"

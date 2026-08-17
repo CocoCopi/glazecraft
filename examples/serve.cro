@@ -1,0 +1,34 @@
+// serve.cro — render a glazecraft component and serve it over HTTP.
+//   corros serve.cro [port]        (default 8899)
+adopt "../src/glaze.cro"
+
+forge TodoApp = component(craft(props) {
+  forge pair = use_state(3)
+  forge n = pair[0]
+  forge items = []
+  forge i = 1
+  whilst i <= n {
+    items.shove(el("li", { "key": i }, ["item " + str(i)]))
+    i = i + 1
+  }
+  return el("div", { "class": "todo" }, [
+    el("h1", {}, ["glazecraft todo"]),
+    el("p", {}, ["items: " + str(n)]),
+    el("ul", {}, items)
+  ])
+})
+
+forge page_html = glaze_page("glazecraft", TodoApp)
+
+forge port = 8899
+when size(args) > 0 { port = num(args[0]) }
+forge l = net_listen(port)
+speak("glazecraft demo: http://127.0.0.1:" + str(port))
+whilst true {
+  forge c = net_accept(l)
+  forge req = net_read(c, 65536)
+  forge resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
+               "Content-Length: " + str(size(page_html)) + "\r\nConnection: close\r\n\r\n" + page_html
+  net_write(c, resp)
+  net_close(c)
+}

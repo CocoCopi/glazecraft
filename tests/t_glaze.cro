@@ -1,0 +1,101 @@
+adopt "../src/glaze.cro"
+
+// --- basic elements ---------------------------------------------------------
+vouch(glaze_render(el("h1", {}, ["Hello"]), nil) == "<h1>Hello</h1>", "h1")
+vouch(glaze_render(el("p", { "class": "note", "id": "a1" }, ["x"]), nil) == "<p class=\"note\" id=\"a1\">x</p>", "attrs")
+vouch(glaze_render(el("img", { "src": "x.png" }, []), nil) == "<img src=\"x.png\">", "void img")
+vouch(glaze_render(el("input", { "disabled": true }, []), nil) == "<input disabled>", "boolean attr")
+vouch(glaze_render(el("div", {}, [el("p", {}, [el("span", {}, ["deep"])])]), nil) == "<div><p><span>deep</span></p></div>", "nested")
+
+// escaping
+vouch(glaze_render(el("p", {}, ["a < b & c"]), nil) == "<p>a &lt; b &amp; c</p>", "text escape")
+vouch(glaze_render(el("div", { "title": "x\"y" }, []), nil) == "<div title=\"x&quot;y\"></div>", "attr escape")
+
+// lists of vnodes (fragments)
+vouch(glaze_render([el("i", {}, ["1"]), el("i", {}, ["2"])], nil) == "<i>1</i><i>2</i>", "fragment")
+
+// numbers render
+vouch(glaze_render(el("p", {}, [42]), nil) == "<p>42</p>", "num child")
+
+// --- components + props ------------------------------------------------------
+forge Greet = component(craft(props) {
+  return el("p", { "class": "greet" }, ["Hi " + props["name"]])
+})
+vouch(glaze_render(Greet, { "name": "Corros" }) == "<p class=\"greet\">Hi Corros</p>", "component props")
+
+// conditional rendering
+forge Cond = component(craft(props) {
+  when props["show"] {
+    return el("p", {}, ["shown"])
+  } else {
+    return el("p", {}, ["hidden"])
+  }
+})
+vouch(glaze_render(Cond, { "show": true }) == "<p>shown</p>", "cond true")
+vouch(glaze_render(Cond, { "show": false }) == "<p>hidden</p>", "cond false")
+
+// list rendering
+forge List = component(craft(props) {
+  forge out = []
+  each item in props["items"] {
+    out.shove(el("li", { "key": item }, [item]))
+  }
+  return el("ul", {}, out)
+})
+vouch(glaze_render(List, { "items": ["a", "b"] }) == "<ul><li>a</li><li>b</li></ul>", "list render")
+
+// --- state (hooks) ------------------------------------------------------------
+forge Counter = component(craft(props) {
+  forge pair = use_state(0)
+  forge count = pair[0]
+  return el("div", { "class": "counter" }, [
+    el("p", {}, [str(count)]),
+    el("button", { "on_click": pair[1] }, ["+1"])
+  ])
+})
+forge app = glaze_mount(Counter, {})
+vouch(app["html"] == "<div class=\"counter\"><p>0</p><button>+1</button></div>", "counter initial: " + app["html"])
+app["set_state"](0, 5)
+vouch(app["html"] == "<div class=\"counter\"><p>5</p><button>+1</button></div>", "counter after set_state: " + app["html"])
+
+// setter from use_state (closure) re-renders too — drive it via the handler
+forge hs3 = glaze_handlers(app["instance"]["vnode"], [])
+vouch(size(hs3) == 1, "counter handler collected")
+hs3[0]["fn"](9)
+vouch(app["html"] == "<div class=\"counter\"><p>9</p><button>+1</button></div>", "setter rerender: " + app["html"])
+
+// --- nested components with state ------------------------------------------------
+forge Child = component(craft(props) {
+  forge pair = use_state(1)
+  return el("b", {}, [str(pair[0])])
+})
+forge Parent = component(craft(props) {
+  forge pair = use_state(0)
+  return el("div", {}, [
+    el("p", {}, [str(pair[0])]),
+    el(Child, { "key": "c1" }, [])
+  ])
+})
+forge papp = glaze_mount(Parent, {})
+vouch(papp["html"] == "<div><p>0</p><b>1</b></div>", "nested initial: " + papp["html"])
+papp["set_state"](0, 7)
+vouch(papp["html"] == "<div><p>7</p><b>1</b></div>", "parent rerender keeps child state: " + papp["html"])
+
+// --- events ---------------------------------------------------------------------
+forge hs = glaze_handlers(el("button", { "on_click": craft() { return nil } }, ["go"]), [])
+vouch(size(hs) == 1 && hs[0]["event"] == "on_click", "handlers collected")
+// handlers are not serialized as attributes
+vouch(!glaze_render(el("button", { "on_click": craft() { return nil } }, ["go"]), nil).holds("on_click"), "handlers not in html")
+
+// --- diff -------------------------------------------------------------------------
+forge d = glaze_diff("<p>a</p><p>b</p>", "<p>a</p><p>c</p>")
+vouch(d["changed"], "diff changed")
+vouch(size(d["spots"]) == 1, "diff spots")
+forge d2 = glaze_diff("<p>same</p>", "<p>same</p>")
+vouch(!d2["changed"], "diff unchanged")
+
+// --- page ---------------------------------------------------------------------------
+forge page = glaze_page("My App", el("h1", {}, ["Welcome"]))
+vouch(page.opens("<!doctype html>") && page.holds("<title>My App</title>") && page.holds("<h1>Welcome</h1>"), "page")
+
+speak("ALL GLAZECRAFT TESTS PASSED")

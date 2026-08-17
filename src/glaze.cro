@@ -1,0 +1,273 @@
+// glaze.cro — glazecraft: a React-style component framework for Corros.
+//
+// Components are plain Corros crafts that take props and return virtual
+// nodes; hooks (`use_state`) give them state; rendering produces HTML.
+//
+//   forge Counter = component(craft(props) {
+//     forge pair = use_state(0)
+//     forge count = pair[0]
+//     forge set = pair[1]
+//     return el("div", { "class": "counter" }, [
+//       el("p", {}, [str(count)]),
+//       el("button", { "on_click": set }, ["+1"])
+//     ])
+//   })
+//
+//   forge app = glaze_mount(Counter, {})
+//   speak(app["html"])          // <div class="counter"><p>0</p>...
+//   app["set_state"](0, 5)      // update the state slot -> re-render
+//   speak(app["html"])          // <div class="counter"><p>5</p>...
+//
+// React mapping:  createElement -> el · function component -> component(craft)
+// useState -> use_state · render to string -> glaze_render · key prop works.
+// Nested components get their own state (persisted across parent re-renders,
+// keyed by `key` prop or position). Events (on_*) are collected, not
+// serialized as attributes — see glaze_handlers for the browser bridge.
+
+// --- virtual nodes -----------------------------------------------------------
+
+craft el(tag, props, children) {
+  when children == nil { children = [] }
+  when props == nil { props = {} }
+  return { "tag": tag, "props": props, "children": children }
+}
+
+// component(fn) wraps a render craft; `fn` takes props and returns vnodes
+craft component(fn) {
+  return { "__comp": fn }
+}
+
+// --- hooks ---------------------------------------------------------------------
+
+forge _g_stack = []        // instances currently rendering (component stack)
+forge _g_seq = 0           // hook sequence counter for the current render
+
+craft _glaze_cur() { return _g_stack[size(_g_stack) - 1] }
+
+// use_state(init) -> [value, setter]; setter re-renders this component
+craft use_state(init) {
+  forge inst = _glaze_cur()
+  forge idx = _g_seq
+  _g_seq = _g_seq + 1
+  forge slot = str(idx)
+  when !inst["store"].holds(slot) { inst["store"][slot] = init }
+  forge val = inst["store"][slot]
+  forge setter = craft(new_val) {
+    inst["store"][slot] = new_val
+    _glaze_rerender(inst)
+    return nil
+  }
+  return [val, setter]
+}
+
+// --- instances ------------------------------------------------------------------
+
+craft _glaze_new_inst(fn, props) {
+  return { "render": fn, "props": props, "store": {}, "kids": {},
+           "html": "", "vnode": nil, "key": "" }
+}
+
+// find or create the child instance for a nested component
+craft _glaze_child(inst, tag, key) {
+  forge id = "p" + str(size(inst["kids"]))
+  when key != nil { id = str(key) }
+  when inst["kids"].holds(id) { return inst["kids"][id] }
+  forge child = _glaze_new_inst(tag["__comp"], nil)
+  child["key"] = id
+  inst["kids"][id] = child
+  return child
+}
+
+craft _glaze_render_component(inst) {
+  // render fn + its vnode tree while this instance is on the stack, so
+  // nested components can resolve their parent via _glaze_cur()
+  _g_stack.shove(inst)
+  _g_seq = 0
+  forge vnode = inst["render"](inst["props"])
+  inst["vnode"] = vnode
+  forge html = _glaze_html_vnode(vnode)
+  _g_stack.yank()
+  return html
+}
+
+craft _glaze_rerender(inst) {
+  forge html = _glaze_render_component(inst)
+  forge changed = html != inst["html"]
+  inst["html"] = html
+  when changed && inst.holds("on_update") && inst["on_update"] != nil {
+    inst["on_update"](html, inst)
+  }
+  return html
+}
+
+// glaze_mount(component, props) -> {html, instance, set_state, rerender}
+// app["html"] is always current: the closures write back through `app`.
+craft glaze_mount(comp, props) {
+  forge inst = _glaze_new_inst(comp["__comp"], props)
+  forge app = { "html": "", "instance": inst }
+  inst["on_update"] = craft(html, i) { app["html"] = html; return nil }
+  app["html"] = _glaze_rerender(inst)
+  app["rerender"] = craft() {
+    app["html"] = _glaze_rerender(inst)
+    return app["html"]
+  }
+  app["set_state"] = craft(slot, val) {
+    inst["store"][str(slot)] = val
+    app["html"] = _glaze_rerender(inst)
+    return app["html"]
+  }
+  return app
+}
+
+// --- rendering to HTML ------------------------------------------------------------
+
+craft _glaze_esc(s) {
+  return s.reforge("&", "&amp;").reforge("<", "&lt;").reforge(">", "&gt;").reforge("\"", "&quot;")
+}
+
+craft _glaze_attrs(props) {
+  forge out = ""
+  when props == nil { return out }
+  forge keys = props.labels()
+  keys.order()   // deterministic output (hash maps have no order)
+  each k in keys {
+    forge v = props[k]
+    when k == "key" || k.opens("on_") || v == nil { onward }
+    when v == true { out = out + " " + k }
+    else { out = out + " " + k + "=\"" + _glaze_esc(str(v)) + "\"" }
+  }
+  return out
+}
+
+forge _glaze_void = "area base br col embed hr img input link meta source track wbr".split(" ")
+
+craft _glaze_html_vnode(v) {
+  when v == nil { return "" }
+  forge t = nature(v)
+  when t == "string" { return _glaze_esc(v) }
+  when t == "num" { return str(v) }
+  when t == "list" {
+    forge out = ""
+    each ch in v { out = out + _glaze_html_vnode(ch) }
+    return out
+  }
+  when t == "map" {
+    forge tag = v["tag"]
+    when nature(tag) == "map" && tag.holds("__comp") {
+      // nested component: reuse its instance (state persists) by key/position
+      forge parent = _glaze_cur()
+      forge key = v["props"].fetch("key", nil)
+      forge inst = _glaze_child(parent, tag, key)
+      inst["props"] = v["props"]
+      return _glaze_render_component(inst)
+    }
+    forge attrs = _glaze_attrs(v["props"])
+    forge inner = ""
+    each ch in v["children"] { inner = inner + _glaze_html_vnode(ch) }
+    when _glaze_void.holds(tag) { return "<" + tag + attrs + ">" }
+    return "<" + tag + attrs + ">" + inner + "</" + tag + ">"
+  }
+  return ""
+}
+
+// glaze_render(vnode_or_component, props) -> HTML string
+craft glaze_render(v, props) {
+  when nature(v) == "map" && v.holds("__comp") {
+    forge inst = _glaze_new_inst(v["__comp"], props)
+    return _glaze_rerender(inst)
+  }
+  return _glaze_html_vnode(v)
+}
+
+// --- events ---------------------------------------------------------------------
+
+// glaze_handlers(vnode, out) — collect every on_* prop as {target, event, fn}
+craft glaze_handlers(vnode, out) {
+  when out == nil { out = [] }
+  when nature(vnode) == "list" {
+    each ch in vnode { glaze_handlers(ch, out) }
+    return out
+  }
+  when nature(vnode) != "map" { return out }
+  forge tag = vnode["tag"]
+  when nature(tag) != "map" {
+    each k in vnode["props"].labels() {
+      when k.opens("on_") {
+        out.shove({ "target": tag, "event": k, "fn": vnode["props"][k] })
+      }
+    }
+  }
+  each ch in vnode["children"] { glaze_handlers(ch, out) }
+  return out
+}
+
+// --- diff (reconciliation) ---------------------------------------------------------
+
+// glaze_diff(old_html, new_html) -> {changed, html, spots}
+// spots = list of {type: "replace", removed, added} for the changed middle
+craft _glaze_tokens(html) {
+  // split into tags and text runs (the "DOM" of a serialized tree)
+  forge toks = []
+  forge i = 0
+  whilst i < size(html) {
+    when html[i] == "<" {
+      forge j = i + 1
+      whilst j < size(html) && html[j] != ">" { j = j + 1 }
+      forge buf = ""
+      forge k2 = i
+      whilst k2 <= j && k2 < size(html) { buf = buf + html[k2]; k2 = k2 + 1 }
+      toks.shove("T:" + buf)
+      i = j + 1
+    } else {
+      forge buf = ""
+      whilst i < size(html) && html[i] != "<" {
+        buf = buf + html[i]
+        i = i + 1
+      }
+      toks.shove("S:" + buf)
+    }
+  }
+  return toks
+}
+
+craft glaze_diff(old_html, new_html) {
+  when old_html == new_html {
+    return { "changed": false, "html": new_html, "spots": [] }
+  }
+  forge oldt = _glaze_tokens(old_html)
+  forge newt = _glaze_tokens(new_html)
+  // common prefix
+  forge p = 0
+  whilst p < size(oldt) && p < size(newt) && oldt[p] == newt[p] { p = p + 1 }
+  // common suffix
+  forge s = 0
+  whilst s < size(oldt) - p && s < size(newt) - p &&
+        oldt[size(oldt) - 1 - s] == newt[size(newt) - 1 - s] { s = s + 1 }
+  forge removed = []
+  forge added = []
+  forge k = p
+  whilst k < size(oldt) - s { removed.shove(oldt[k]); k = k + 1 }
+  forge k2 = p
+  whilst k2 < size(newt) - s { added.shove(newt[k2]); k2 = k2 + 1 }
+  return {
+    "changed": true,
+    "html": new_html,
+    "spots": [{ "type": "replace", "removed": removed, "added": added }]
+  }
+}
+
+// --- page helper ---------------------------------------------------------------------
+
+// glaze_page(title, body) -> a full HTML document; body is a vnode, a list
+// of vnodes, or a component (rendered with empty props)
+craft glaze_page(title, body) {
+  forge body_html = ""
+  when nature(body) == "map" && body.holds("__comp") {
+    body_html = glaze_render(body, {})
+  } else {
+    body_html = _glaze_html_vnode(body)
+  }
+  return "<!doctype html><html><head><meta charset=\"utf-8\"><title>" +
+         _glaze_esc(title) + "</title></head><body>" +
+         body_html + "</body></html>"
+}
