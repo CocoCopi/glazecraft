@@ -42,6 +42,7 @@ fi
 cp -r "$srcdir/src" "$libdir/src"
 cp -r "$srcdir/examples" "$libdir/examples"
 cp -r "$srcdir/tests" "$libdir/tests"
+cp -r "$srcdir/web" "$libdir/web"
 install -m 0755 "$srcdir/glazecraft" "$libdir/glazecraft"
 ln -sf "$libdir/glazecraft" "$bindir/glazecraft"
 
