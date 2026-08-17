@@ -160,6 +160,7 @@ craft _glaze_html_vnode(v) {
     return out
   }
   when t == "map" {
+    when v.holds("__raw") { return v["__raw"] }  // raw-HTML passthrough (designer escape hatch)
     forge tag = v["tag"]
     when nature(tag) == "map" && tag.holds("__comp") {
       // nested component: reuse its instance (state persists) by key/position
@@ -177,6 +178,10 @@ craft _glaze_html_vnode(v) {
   }
   return ""
 }
+
+// _glaze_raw(html) -> an unescaped passthrough node for hand-crafted fragments
+// (inline SVG marks, data URIs, decorative markup). Everything else stays escaped.
+craft _glaze_raw(html) { return { "__raw": html } }
 
 // glaze_render(vnode_or_component, props) -> HTML string
 craft glaze_render(v, props) {
