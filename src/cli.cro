@@ -44,7 +44,11 @@ craft main() {
     forge app = glaze_mount(Todo, {})
     forge desc = glaze_hydrate(app)
     forge js = ""
-    when file_exists("../web/glaze.js") { js = read("../web/glaze.js") }
+    forge js_path = ""
+    when getenv("CORROS_ROOT") != "" { js_path = getenv("CORROS_ROOT") + "/web/glaze.js" }
+    when js_path == "" && file_exists("web/glaze.js") { js_path = "web/glaze.js" }
+    when js_path == "" && file_exists("../web/glaze.js") { js_path = "../web/glaze.js" }
+    when js_path != "" && file_exists(js_path) { js = read(js_path) }
     forge page = "<!doctype html><html><head><meta charset=\"utf-8\"><title>glazecraft</title>" +
       "<style>button{margin-right:4px}</style></head><body>" +
       "<div data-glaze-id=\"" + desc["id"] + "\">" + desc["html"] + "</div>" +
