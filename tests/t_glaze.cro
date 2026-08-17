@@ -54,15 +54,16 @@ forge Counter = component(craft(props) {
   ])
 })
 forge app = glaze_mount(Counter, {})
-vouch(app["html"] == "<div class=\"counter\"><p>0</p><button>+1</button></div>", "counter initial: " + app["html"])
+// the runtime marks on_* handlers with data-glaze-h / data-glaze-evt
+vouch(app["html"] == "<div class=\"counter\"><p>0</p><button data-glaze-evt=\"on_click\" data-glaze-h=\"0\">+1</button></div>", "counter initial: " + app["html"])
 app["set_state"](0, 5)
-vouch(app["html"] == "<div class=\"counter\"><p>5</p><button>+1</button></div>", "counter after set_state: " + app["html"])
+vouch(app["html"] == "<div class=\"counter\"><p>5</p><button data-glaze-evt=\"on_click\" data-glaze-h=\"0\">+1</button></div>", "counter after set_state: " + app["html"])
 
 // setter from use_state (closure) re-renders too — drive it via the handler
 forge hs3 = glaze_handlers(app["instance"]["vnode"], [])
 vouch(size(hs3) == 1, "counter handler collected")
 hs3[0]["fn"](9)
-vouch(app["html"] == "<div class=\"counter\"><p>9</p><button>+1</button></div>", "setter rerender: " + app["html"])
+vouch(app["html"] == "<div class=\"counter\"><p>9</p><button data-glaze-evt=\"on_click\" data-glaze-h=\"0\">+1</button></div>", "setter rerender: " + app["html"])
 
 // --- nested components with state ------------------------------------------------
 forge Child = component(craft(props) {
@@ -93,6 +94,39 @@ vouch(d["changed"], "diff changed")
 vouch(size(d["spots"]) == 1, "diff spots")
 forge d2 = glaze_diff("<p>same</p>", "<p>same</p>")
 vouch(!d2["changed"], "diff unchanged")
+
+// --- hydration + live updates ---------------------------------------------------------
+forge Live = component(craft(props) {
+  forge pair = use_state(3)
+  forge n = pair[0]
+  forge set = pair[1]
+  forge btns = []
+  each b in [1, 2, 3] {
+    btns.shove(el("button", { "on_click": set, "data-glaze-value": str(b) }, [str(b)]))
+  }
+  return el("div", {}, [el("p", {}, [str(n)]), el("p", {}, btns)])
+})
+forge lapp = glaze_mount(Live, {})
+forge desc = glaze_hydrate(lapp)
+vouch(desc["id"] == "g1", "hydrate id: " + desc["id"])
+vouch(desc["handlers"] == 3, "hydrate handlers: " + str(desc["handlers"]))
+vouch(desc["html"].holds("data-glaze-h=\"0\""), "handler marked in html")
+vouch(desc["html"].holds("data-glaze-evt=\"on_click\""), "event marked in html")
+vouch(!desc["html"].holds("on_click="), "on_click itself not serialized")
+
+forge r1 = glaze_handle_event(lapp, 0, 5)
+vouch(r1["ok"] && r1["changed"], "event ok + changed")
+vouch(r1["html"].holds(">5<"), "event applied: " + r1["html"])
+forge r2 = glaze_handle_event(lapp, 0, 5)
+vouch(!r2["changed"], "same value -> unchanged")
+forge r3 = glaze_handle_event(lapp, 1, 1)
+vouch(r3["html"].holds(">1<"), "second handler: " + r3["html"])
+forge r4 = glaze_handle_event(lapp, 99, 0)
+vouch(!r4["ok"], "bad handler index -> not ok")
+
+// form parsing
+forge f = _glaze_parse_form("id=g1&h=0&value=5")
+vouch(f["id"] == "g1" && f["h"] == "0" && f["value"] == "5", "form parse")
 
 // --- page ---------------------------------------------------------------------------
 forge page = glaze_page("My App", el("h1", {}, ["Welcome"]))

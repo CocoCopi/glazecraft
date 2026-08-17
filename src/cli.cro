@@ -1,21 +1,30 @@
 // cli.cro — glazecraft command line.
 //   glazecraft render        render the demo component to HTML
-//   glazecraft serve [port]  serve the demo page (default 8899)
+//   glazecraft serve [port]  serve the demo page + live updates (default 8899)
+// The serve mode routes through kilncraft (clone it next to glazecraft, or
+// point CORROS_ROOT at an install that has it).
 adopt "glaze.cro"
+adopt "../../kilncraft/src/kiln.cro"
 
-forge TodoApp = component(craft(props) {
+forge Todo = component(craft(props) {
   forge pair = use_state(3)
   forge n = pair[0]
+  forge set = pair[1]
   forge items = []
   forge i = 1
   whilst i <= n {
     items.shove(el("li", { "key": i }, ["item " + str(i)]))
     i = i + 1
   }
+  forge btns = []
+  each b in [1, 2, 3, 4, 5] {
+    btns.shove(el("button", { "on_click": set, "data-glaze-value": str(b) }, [str(b)]))
+  }
   return el("div", { "class": "todo" }, [
     el("h1", {}, ["glazecraft todo"]),
     el("p", {}, ["items: " + str(n)]),
-    el("ul", {}, items)
+    el("ul", {}, items),
+    el("p", {}, btns)
   ])
 })
 
@@ -26,23 +35,33 @@ craft main() {
     return nil
   }
   when args[0] == "render" {
-    speak(glaze_page("glazecraft", TodoApp))
+    speak(glaze_page("glazecraft", Todo))
     return nil
   }
   when args[0] == "serve" {
     forge port = 8899
     when size(args) > 1 { port = num(args[1]) }
-    forge page_html = glaze_page("glazecraft", TodoApp)
-    forge l = net_listen(port)
-    speak("glazecraft demo: http://127.0.0.1:" + str(port))
-    whilst true {
-      forge c = net_accept(l)
-      forge req = net_read(c, 65536)
-      forge resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
-                   "Content-Length: " + str(size(page_html)) + "\r\nConnection: close\r\n\r\n" + page_html
-      net_write(c, resp)
-      net_close(c)
-    }
+    forge app = glaze_mount(Todo, {})
+    forge desc = glaze_hydrate(app)
+    forge js = ""
+    when file_exists("../web/glaze.js") { js = read("../web/glaze.js") }
+    forge page = "<!doctype html><html><head><meta charset=\"utf-8\"><title>glazecraft</title>" +
+      "<style>button{margin-right:4px}</style></head><body>" +
+      "<div data-glaze-id=\"" + desc["id"] + "\">" + desc["html"] + "</div>" +
+      "<script>" + js + "</script></body></html>"
+    forge server = kiln()
+    app_get(server, "/", craft(req, res) { return res_html(res, page) })
+    app_post(server, "/_glaze/event", craft(req, res) {
+      forge form = _glaze_parse_form(req["body"])
+      forge id = form.fetch("id", "")
+      forge h = num(form.fetch("h", "0"))
+      forge val = form.fetch("value", nil)
+      when !_g_registry.holds(id) { return res_text(res, "err\nunknown component id") }
+      forge r = glaze_handle_event(_g_registry[id], h, val)
+      when r["ok"] { return res_text(res, "ok\n" + r["html"]) }
+      return res_text(res, "err\n" + r["error"])
+    })
+    kiln_serve(server, port)
     return nil
   }
   speak("unknown command: " + args[0])

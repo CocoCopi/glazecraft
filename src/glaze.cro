@@ -64,7 +64,7 @@ craft use_state(init) {
 
 craft _glaze_new_inst(fn, props) {
   return { "render": fn, "props": props, "store": {}, "kids": {},
-           "html": "", "vnode": nil, "key": "" }
+           "html": "", "vnode": nil, "key": "", "is_root": false }
 }
 
 // find or create the child instance for a nested component
@@ -85,6 +85,12 @@ craft _glaze_render_component(inst) {
   _g_seq = 0
   forge vnode = inst["render"](inst["props"])
   inst["vnode"] = vnode
+  when inst["is_root"] {
+    // mark on_* handlers for the browser runtime (root only: handler
+    // indices are relative to this instance's list)
+    inst["handlers"] = []
+    _glaze_mark(vnode, inst["handlers"])
+  }
   forge html = _glaze_html_vnode(vnode)
   _g_stack.yank()
   return html
@@ -104,6 +110,8 @@ craft _glaze_rerender(inst) {
 // app["html"] is always current: the closures write back through `app`.
 craft glaze_mount(comp, props) {
   forge inst = _glaze_new_inst(comp["__comp"], props)
+  inst["is_root"] = true
+  inst["handlers"] = []
   forge app = { "html": "", "instance": inst }
   inst["on_update"] = craft(html, i) { app["html"] = html; return nil }
   app["html"] = _glaze_rerender(inst)
@@ -254,6 +262,79 @@ craft glaze_diff(old_html, new_html) {
     "html": new_html,
     "spots": [{ "type": "replace", "removed": removed, "added": added }]
   }
+}
+
+// --- hydration + live updates (the browser side) --------------------------------------
+// SSR marks every element with an on_* handler with data-glaze-h (handler
+// index) + data-glaze-evt, and the client runtime (web/glaze.js) posts events
+// back to /_glaze/event; the server runs the handler and returns the new
+// HTML. The mounted app is registered under an id for that round-trip.
+
+forge _g_registry = {}
+
+craft _glaze_mark(vnode, out) {
+  when nature(vnode) == "list" {
+    each ch in vnode { _glaze_mark(ch, out) }
+    return nil
+  }
+  when nature(vnode) != "map" { return nil }
+  forge tag = vnode["tag"]
+  when nature(tag) != "map" {
+    each k in vnode["props"].labels() {
+      when k.opens("on_") {
+        forge h = size(out)
+        vnode["props"]["data-glaze-h"] = str(h)
+        vnode["props"]["data-glaze-evt"] = k
+        out.shove({ "evt": k, "fn": vnode["props"][k] })
+      }
+    }
+  }
+  each ch in vnode["children"] { _glaze_mark(ch, out) }
+  return nil
+}
+
+// glaze_hydrate(app) — register the mounted app for live updates, return a
+// descriptor {id, html, handlers} for embedding in the page.
+craft glaze_hydrate(app) {
+  forge id = "g" + str(size(_g_registry) + 1)
+  _g_registry[id] = app
+  return { "id": id, "html": app["html"], "handlers": size(app["instance"]["handlers"]) }
+}
+
+craft _glaze_num(v) {
+  when v == nil { return nil }
+  forge s = str(v)
+  when s == "" { return nil }
+  forge k = 0
+  whilst k < size(s) {
+    when !"0123456789.-".holds(s[k]) { return v }
+    k = k + 1
+  }
+  return num(s)
+}
+
+// glaze_handle_event(app, h, value) — run handler h with value, re-render,
+// and report the new html (plus whether it changed).
+craft glaze_handle_event(app, h, value) {
+  forge hs = app["instance"]["handlers"]
+  when h >= size(hs) { return { "ok": false, "error": "unknown handler " + str(h) } }
+  forge old = app["html"]
+  hs[h]["fn"](_glaze_num(value))
+  forge diff = glaze_diff(old, app["html"])
+  return { "ok": true, "html": app["html"], "changed": diff["changed"], "spots": diff["spots"] }
+}
+
+// parse an application/x-www-form-urlencoded body into a map
+craft _glaze_parse_form(qs) {
+  forge out = {}
+  when qs == "" { return out }
+  each pair in qs.split("&") {
+    when pair.holds("=") {
+      forge kv = pair.split("=")
+      out[kv[0]] = kv[1].reforge("+", " ").reforge("%20", " ")
+    }
+  }
+  return out
 }
 
 // --- page helper ---------------------------------------------------------------------

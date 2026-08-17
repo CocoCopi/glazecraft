@@ -1,34 +1,60 @@
-// serve.cro — render a glazecraft component and serve it over HTTP.
-//   corros serve.cro [port]        (default 8899)
+// serve.cro — the glazecraft live demo: server-side render a component,
+// hydrate it for the browser (web/glaze.js), and handle live state updates
+// through the /_glaze/event endpoint. The HTTP server is kilncraft (the
+// sibling backend-framework repo) — clone it next to glazecraft:
+//   git clone https://github.com/CocoCopi/kilncraft ../kilncraft
+//   corros serve.cro [port]
 adopt "../src/glaze.cro"
+adopt "../../kilncraft/src/kiln.cro"
 
-forge TodoApp = component(craft(props) {
+// a stateful component with buttons that SET the item count
+forge Todo = component(craft(props) {
   forge pair = use_state(3)
   forge n = pair[0]
+  forge set = pair[1]
   forge items = []
   forge i = 1
   whilst i <= n {
     items.shove(el("li", { "key": i }, ["item " + str(i)]))
     i = i + 1
   }
+  forge btns = []
+  each b in [1, 2, 3, 4, 5] {
+    btns.shove(el("button", { "on_click": set, "data-glaze-value": str(b) }, [str(b)]))
+  }
   return el("div", { "class": "todo" }, [
     el("h1", {}, ["glazecraft todo"]),
     el("p", {}, ["items: " + str(n)]),
-    el("ul", {}, items)
+    el("ul", {}, items),
+    el("p", {}, btns)
   ])
 })
 
-forge page_html = glaze_page("glazecraft", TodoApp)
+forge app = glaze_mount(Todo, {})
+forge desc = glaze_hydrate(app)
+
+forge js = ""
+forge js_path = "../web/glaze.js"
+when file_exists(js_path) { js = read(js_path) }
+
+forge page = "<!doctype html><html><head><meta charset=\"utf-8\"><title>glazecraft</title>" +
+  "<style>button{margin-right:4px}</style></head><body>" +
+  "<div data-glaze-id=\"" + desc["id"] + "\">" + desc["html"] + "</div>" +
+  "<script>" + js + "</script></body></html>"
+
+forge server = kiln()
+app_get(server, "/", craft(req, res) { return res_html(res, page) })
+app_post(server, "/_glaze/event", craft(req, res) {
+  forge form = _glaze_parse_form(req["body"])
+  forge id = form.fetch("id", "")
+  forge h = num(form.fetch("h", "0"))
+  forge val = form.fetch("value", nil)
+  when !_g_registry.holds(id) { return res_text(res, "err\nunknown component id") }
+  forge r = glaze_handle_event(_g_registry[id], h, val)
+  when r["ok"] { return res_text(res, "ok\n" + r["html"]) }
+  return res_text(res, "err\n" + r["error"])
+})
 
 forge port = 8899
 when size(args) > 0 { port = num(args[0]) }
-forge l = net_listen(port)
-speak("glazecraft demo: http://127.0.0.1:" + str(port))
-whilst true {
-  forge c = net_accept(l)
-  forge req = net_read(c, 65536)
-  forge resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
-               "Content-Length: " + str(size(page_html)) + "\r\nConnection: close\r\n\r\n" + page_html
-  net_write(c, resp)
-  net_close(c)
-}
+kiln_serve(server, port)
